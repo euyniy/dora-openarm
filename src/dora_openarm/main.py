@@ -119,6 +119,7 @@ def main():
     arm = openarm_driver.SingleArmDriver(name, config)
     arm.start()
 
+    stopped = False
     initialized = False
     align_state = AlignState()
     for event in node:
@@ -128,6 +129,8 @@ def main():
         # Main process
         event_id = event["id"]
         if event_id == "request_position":
+            if stopped:
+                continue
             current_position = arm.fetch_position(
                 refresh=args.refresh_every_request,
             )
@@ -137,6 +140,8 @@ def main():
                 pa.array(current_position, type=pa.float32()),
             )
         elif event_id == "request_state":
+            if stopped:
+                continue
             state = arm.fetch_state(refresh=args.refresh_every_request)
             node.send_output(
                 "state",
@@ -149,7 +154,29 @@ def main():
                     names=["qpos", "qvel", "qtorque"],
                 ),
             )
+        elif event_id == "command":
+            cmd = event["value"][0].as_py()
+            if cmd == "initialize":
+                # Inference: blocking hardware start then ready immediately.
+                arm = openarm_driver.SingleArmDriver(name, config)
+                arm.start()
+                stopped = False
+                initialized = True
+                align_state = AlignState()
+                node.send_output("status", pa.array(["ready"]))
+            elif cmd == "start":
+                # Data collection: hardware restart then align to first command.
+                arm = openarm_driver.SingleArmDriver(name, config)
+                arm.start()
+                stopped = False
+                initialized = False
+                align_state = AlignState()
+            elif cmd in ("stop_arm", "success", "fail", "cancel"):
+                arm.stop()
+                stopped = True
         elif event_id == "move_position":
+            if stopped:
+                continue
             value = event["value"]
             if isinstance(value, pa.StructArray):
                 new_position = value.field("new_position")
